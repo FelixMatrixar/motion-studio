@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pydantic
+dashscope
+ffmpeg-python
+python-multipart
