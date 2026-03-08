@@ -318,14 +318,20 @@ const App: React.FC = () => {
           edges: [{ source: "node_ffmpeg_1", target: "node_qwen_1" }]
         };
 
-        const initRes = await fetch('http://localhost:8000/execute-graph', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(dagPayload)
+        // --- CHANGE 1: Point to Server IP ---
+        const initRes = await fetch('http://43.99.42.62:8000/execute-graph', {
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify(dagPayload)
         });
+        
         if (!initRes.ok) throw new Error('Failed to start');
         
         const { job_id } = await initRes.json();
+        
         const poll = setInterval(async () => {
-          const statRes = await fetch(`http://localhost:8000/job-status/${job_id}`);
+          // --- CHANGE 2: Point to Server IP for polling ---
+          const statRes = await fetch(`http://43.99.42.62:8000/job-status/${job_id}`);
           const statData = await statRes.json();
           setStatusMessage(statData.message || "Processing...");
           
