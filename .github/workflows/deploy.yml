@@ -1,0 +1,70 @@
+name: Deploy MotionStudio
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Upload Frontend Dist to Server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          source: "frontend/dist/*"
+          target: "/var/www/motionstudio"
+          strip_components: 2
+
+      - name: Upload Backend Code (No Venv)
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          source: "backend/*, !backend/venv"
+          target: "/root/backend"
+          strip_components: 1
+
+      - name: Configure and Restart Services
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: |
+            # 1. Update Permissions
+            chown -R nginx:nginx /var/www/motionstudio
+            chmod -R 755 /var/www/motionstudio
+
+            # 2. Inject Secrets into .env
+            cd /root/backend
+            echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" > .env
+            echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
+            echo "DASHSCOPE_API_KEY=${{ secrets.DASHSCOPE_API_KEY }}" >> .env
+            echo "PORT=8000" >> .env
+
+            # 3. Restart Backend with PM2 using our Portable Python
+            # We use the full path to the venv python we set up
+            /root/backend/venv/bin/python -m pip install -r requirements.txt -i https://pypi.org/simple
+            pm2 restart motion-api || pm2 start "/root/backend/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000" --name "motion-api"
+            pm2 save
+            
+            # 4. Refresh Nginx
+            systemctl restart nginx

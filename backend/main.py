@@ -1,16 +1,18 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Any
 import re
+import uuid
+
+# Import the router function from your registry
 from node_registry import execute_node
 
 app = FastAPI(title="MotionStudio DAG Orchestrator")
 
-# Critical for local development with Vite
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict this in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,15 +29,17 @@ class EdgeDef(BaseModel):
 
 class GraphPayload(BaseModel):
     graph_id: str
-    state: Dict[str, Any]  # Global variables passed from frontend
+    state: Dict[str, Any]
     nodes: List[NodeDef]
     edges: List[EdgeDef]
 
+# === IN-MEMORY DATABASE FOR JOB STATUS ===
+# (In production, you'd use Redis or Postgres for this)
+jobs = {}
+
 def inject_variables(inputs: Dict[str, Any], global_state: Dict[str, Any]) -> Dict[str, Any]:
-    """Resolves {{variable_names}} from the global state."""
     resolved_inputs = {}
     pattern = re.compile(r"\{\{(.+?)\}\}")
-    
     for key, value in inputs.items():
         if isinstance(value, str):
             matches = pattern.findall(value)
@@ -45,25 +49,58 @@ def inject_variables(inputs: Dict[str, Any], global_state: Dict[str, Any]) -> Di
         resolved_inputs[key] = value
     return resolved_inputs
 
-@app.post("/execute-graph")
-async def execute_graph(payload: GraphPayload):
-    # Flatten the state so node outputs can be accessed downstream
+# === THE BACKGROUND WORKER ===
+async def run_dag_background(job_id: str, payload: GraphPayload):
     current_state = {**payload.state}
+    print(f"\n=== Background Job {job_id} Started ===")
     
-    # Note: Assuming nodes are provided in topological order for now.
-    for node in payload.nodes:
-        try:
+    try:
+        for node in payload.nodes:
             resolved_inputs = inject_variables(node.inputs, current_state)
-            print(f"\n-> Executing Node: {node.id} | Type: {node.type}")
             
-            # Delegate to the node registry
+            # Update status so frontend knows what node we are on
+            jobs[job_id]["message"] = f"Executing {node.type}..."
+            
             node_output = await execute_node(node.type, resolved_inputs)
             
-            # Append outputs back to the global state
             for out_key, out_val in node_output.items():
                 current_state[f"{node.id}.{out_key}"] = out_val
-                
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Node {node.id} failed: {str(e)}")
 
-    return {"status": "success", "graph_id": payload.graph_id, "final_state": current_state}
+        # Mark as completed and save the final state
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["final_state"] = current_state
+        print(f"=== Background Job {job_id} Completed ===")
+
+    except Exception as e:
+        print(f"\n[ERROR] Job {job_id} failed: {str(e)}")
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["error"] = str(e)
+
+
+# === ENDPOINTS ===
+
+@app.post("/execute-graph")
+async def execute_graph(payload: GraphPayload, background_tasks: BackgroundTasks):
+    """Accepts the payload and kicks off the background task instantly."""
+    job_id = str(uuid.uuid4())
+    
+    # Initialize the job in our tracker
+    jobs[job_id] = {
+        "status": "processing",
+        "message": "Initializing DAG...",
+        "final_state": None,
+        "error": None
+    }
+    
+    # Hand the heavy lifting to FastAPI's background worker
+    background_tasks.add_task(run_dag_background, job_id, payload)
+    
+    # Return immediately!
+    return {"job_id": job_id, "status": "processing"}
+
+@app.get("/job-status/{job_id}")
+async def get_job_status(job_id: str):
+    """Frontend calls this every few seconds to check progress."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return jobs[job_id]

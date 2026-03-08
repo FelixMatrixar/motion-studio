@@ -1,6 +1,9 @@
-fastapi
-uvicorn
-pydantic
 dashscope
+fastapi
 ffmpeg-python
+pydantic
+python-dotenv
 python-multipart
+requests
+supabase
+uvicorn
