@@ -17,6 +17,8 @@ jobs:
           node-version: '20'
 
       - name: Build Frontend
+        env:
+          VITE_API_URL: http://${{ secrets.SERVER_IP }}:8000
         run: |
           cd frontend
           npm install
@@ -61,7 +63,6 @@ jobs:
             echo "PORT=8000" >> .env
 
             # 3. Restart Backend with PM2 using our Portable Python
-            # We use the full path to the venv python we set up
             /root/backend/venv/bin/python -m pip install -r requirements.txt -i https://pypi.org/simple
             pm2 restart motion-api || pm2 start "/root/backend/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000" --name "motion-api"
             pm2 save

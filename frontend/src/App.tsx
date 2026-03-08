@@ -18,10 +18,10 @@ const pulseGlow = keyframes`
 
 // --- NEW QWEN COLOR PALETTE ---
 const COLORS = {
-  bgBase: '#090810',      // Deepest purple/black
-  bgPanel: '#131120',     // Slightly lighter for the sidebar
-  bgCard: '#1C1930',      // Card backgrounds
-  primary: '#614BFF',     // Qwen Logo Purple
+  bgBase: '#090810',
+  bgPanel: '#131120',
+  bgCard: '#1C1930',
+  primary: '#614BFF',
   primaryHover: '#7662FF',
   textMain: '#FFFFFF',
   textMuted: '#9E97C1',
@@ -63,20 +63,11 @@ const Title = styled.h1`
   align-items: center;
   gap: 10px;
   letter-spacing: -0.5px;
-    
-  /* 1. We replace the old Qwen logo url with your new PUBLIC WORDMARK URL */
-  /* (Make sure you screenshot the horizontal wordmark from the image I sent) */
   background: url('/MotionStudio-CompleteLogo.svg') no-repeat center left / contain;
-  
-  /* 2. Make sure the HTML text disappears (the logo has the text built-in) */
-  text-indent: -9999px; /* Hide the HTML text, but keep it accessible */
-  width: 600px; /* Set an appropriate width to display the logo */
-  height: 100px;  /* Set an appropriate height to display the logo */
-  
-  /* 3. Turn off the pseudo-element we used before */
-  &::before {
-    display: none; 
-  }
+  text-indent: -9999px; 
+  width: 600px; 
+  height: 100px;  
+  &::before { display: none; }
 `;
 
 const Subtitle = styled.p`
@@ -175,7 +166,6 @@ const ExecuteButton = styled.button`
   }
 `;
 
-// (Re-using standard styled elements for recording/loading internally)
 const RecordButton = styled.button<{ $isRecording: boolean }>`
   width: 48px; height: 48px; border-radius: 50%;
   border: 2px solid ${COLORS.danger};
@@ -213,7 +203,6 @@ const PreviewMedia = styled.div`
   width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
   img, video { max-width: 100%; max-height: 240px; object-fit: contain; border-radius: 8px; }
 `;
-
 
 const App: React.FC = () => {
   const initialVariables = useTemplateVariables();
@@ -298,11 +287,13 @@ const App: React.FC = () => {
       };
       mediaRecorder.start(100);
       setIsRecording(true);
-      setTimeout(() => mediaRecorder.stop(), 5000); // Auto stop after 5s
+      setTimeout(() => mediaRecorder.stop(), 5000); 
     }
   };
 
-  // The Exact Async Execution Logic we built
+  // --- THE MAGIC: Dynamic URL Resolution ---
+  const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
   const handleSubmit = async () => {
     if (referenceImage && motionVideo) {
       setIsSubmitting(true);
@@ -318,8 +309,7 @@ const App: React.FC = () => {
           edges: [{ source: "node_ffmpeg_1", target: "node_qwen_1" }]
         };
 
-        // --- CHANGE 1: Point to Server IP ---
-        const initRes = await fetch('http://43.99.42.62:8000/execute-graph', {
+        const initRes = await fetch(`${API_URL}/execute-graph`, {
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify(dagPayload)
@@ -330,8 +320,7 @@ const App: React.FC = () => {
         const { job_id } = await initRes.json();
         
         const poll = setInterval(async () => {
-          // --- CHANGE 2: Point to Server IP for polling ---
-          const statRes = await fetch(`http://43.99.42.62:8000/job-status/${job_id}`);
+          const statRes = await fetch(`${API_URL}/job-status/${job_id}`);
           const statData = await statRes.json();
           setStatusMessage(statData.message || "Processing...");
           
@@ -356,7 +345,6 @@ const App: React.FC = () => {
 
   return (
     <AppContainer>
-      {/* LEFT SIDEBAR - INPUTS */}
       <Sidebar>
         <Header>
           <Title>Animate Studio</Title>
@@ -364,7 +352,6 @@ const App: React.FC = () => {
         </Header>
 
         <ScrollableInputs>
-          {/* IMAGE UPLOAD */}
           <InputSection>
             <SectionHeader>
               <SectionLabel>1. Character Image</SectionLabel>
@@ -386,7 +373,6 @@ const App: React.FC = () => {
             <input type="file" ref={imageInputRef} hidden accept="image/*" onChange={(e) => e.target.files?.[0] && handleImageUpload(e.target.files[0])} />
           </InputSection>
 
-          {/* MOTION UPLOAD / RECORD */}
           <InputSection>
             <SectionHeader>
               <SectionLabel>2. Action Template</SectionLabel>
@@ -425,7 +411,6 @@ const App: React.FC = () => {
         </ExecuteButton>
       </Sidebar>
 
-      {/* RIGHT STAGE - OUTPUT */}
       <Stage>
         {!finalVideoUrl && !isSubmitting && (
           <div style={{ textAlign: 'center', color: COLORS.textMuted }}>
@@ -446,7 +431,6 @@ const App: React.FC = () => {
         )}
       </Stage>
 
-      {/* LOADING OVERLAY */}
       {isSubmitting && (
         <LoadingOverlay>
           <Spinner />
