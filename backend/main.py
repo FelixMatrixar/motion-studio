@@ -4,9 +4,20 @@ from pydantic import BaseModel
 from typing import Dict, List, Any
 import re
 import uuid
+import os
+import ssl
+import certifi
 
 # Import the router function from your registry
 from node_registry import execute_node
+
+# 🛡️ THE SSL FIX FOR CENTOS 7
+# Tell Python to use certifi's modern certificates
+os.environ['SSL_CERT_FILE'] = certifi.where()
+os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+# Force urllib (which Dashscope uses) to use these certs
+ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
 
 app = FastAPI(title="MotionStudio DAG Orchestrator")
 
