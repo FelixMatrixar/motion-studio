@@ -465,9 +465,14 @@ const App: React.FC = () => {
               
               <ExampleBox style={{ borderColor: COLORS.primary, boxShadow: `0 0 20px rgba(97, 75, 255, 0.2)` }}>
                 <span style={{ color: COLORS.primary }}>Result</span>
-                <div style={{ width: '100%', height: '200px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#151226', borderRadius: '8px', border: `1px dashed ${COLORS.primary}` }}>
-                  <span style={{ fontSize: '24px' }}>✨🐻🕺✨</span>
-                </div>
+                <video 
+                  src="https://bbgljtsebzqqlspagmfs.supabase.co/storage/v1/object/public/motion-studio-media/intro/black-bear-dancing.mp4" 
+                  autoPlay 
+                  loop 
+                  muted 
+                  playsInline 
+                  style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '8px', border: `1px solid ${COLORS.primary}` }}
+                />
               </ExampleBox>
             </ExampleRow>
 
