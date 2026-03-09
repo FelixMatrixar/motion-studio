@@ -2,11 +2,11 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Any
-import re
-import uuid
-import os
-import ssl
 import certifi
+import os
+import re
+import ssl
+import uuid
 
 # Import the router function from your registry
 from node_registry import execute_node
