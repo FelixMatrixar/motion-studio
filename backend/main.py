@@ -1,17 +1,16 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Dict, List, Any
+from typing import Dict, Any
 import certifi
 import os
-import re
 import ssl
 import uuid
 
-# Import the router function from your registry
-from node_registry import execute_node
+# Import the new structure
+from core.models import GraphPayload
+from orchestrator.graph_executor import GraphExecutor
 
-# 🛡️ THE SSL FIX FOR CENTOS 7
+# 🛡️ THE SSL FIX FOR CENTOS 7 / Windows
 # Tell Python to use certifi's modern certificates
 os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
@@ -29,63 +28,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class NodeDef(BaseModel):
-    id: str
-    type: str
-    inputs: Dict[str, Any]
-
-class EdgeDef(BaseModel):
-    source: str
-    target: str
-
-class GraphPayload(BaseModel):
-    graph_id: str
-    state: Dict[str, Any]
-    nodes: List[NodeDef]
-    edges: List[EdgeDef]
-
 # === IN-MEMORY DATABASE FOR JOB STATUS ===
 # (In production, you'd use Redis or Postgres for this)
 jobs = {}
 
-def inject_variables(inputs: Dict[str, Any], global_state: Dict[str, Any]) -> Dict[str, Any]:
-    resolved_inputs = {}
-    pattern = re.compile(r"\{\{(.+?)\}\}")
-    for key, value in inputs.items():
-        if isinstance(value, str):
-            matches = pattern.findall(value)
-            for match in matches:
-                if match in global_state:
-                    value = value.replace(f"{{{{{match}}}}}", str(global_state[match]))
-        resolved_inputs[key] = value
-    return resolved_inputs
+# Initialize the Executor
+executor = GraphExecutor()
 
 # === THE BACKGROUND WORKER ===
 async def run_dag_background(job_id: str, payload: GraphPayload):
-    current_state = {**payload.state}
     print(f"\n=== Background Job {job_id} Started ===")
     
-    try:
-        for node in payload.nodes:
-            resolved_inputs = inject_variables(node.inputs, current_state)
-            
-            # Update status so frontend knows what node we are on
-            jobs[job_id]["message"] = f"Executing {node.type}..."
-            
-            node_output = await execute_node(node.type, resolved_inputs)
-            
-            for out_key, out_val in node_output.items():
-                current_state[f"{node.id}.{out_key}"] = out_val
+    async def update_status(message: str):
+        jobs[job_id]["message"] = message
 
+    try:
+        final_state = await executor.execute(payload, update_status_callback=update_status)
+        
         # Mark as completed and save the final state
         jobs[job_id]["status"] = "completed"
-        jobs[job_id]["final_state"] = current_state
+        jobs[job_id]["final_state"] = final_state
+        jobs[job_id]["message"] = "Completed successfully"
         print(f"=== Background Job {job_id} Completed ===")
 
     except Exception as e:
         print(f"\n[ERROR] Job {job_id} failed: {str(e)}")
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
+        jobs[job_id]["message"] = f"Failed: {str(e)}"
 
 
 # === ENDPOINTS ===

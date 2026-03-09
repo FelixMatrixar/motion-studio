@@ -1,33 +1,18 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState } from 'react';
 import styled, { keyframes } from 'styled-components';
-import { uploadFile, useTemplateVariables } from './bridge';
+import { StorageClient } from './services/storageClient';
+import { useMediaCapture } from './hooks/useMediaCapture';
+import { useJobOrchestrator } from './hooks/useJobOrchestrator';
+import { WelcomeModal } from './components/WelcomeModal';
+import { MediaUploader } from './components/MediaUploader';
+import { WebcamRecorder } from './components/WebcamRecorder';
+import { Stage } from './components/Stage';
+import { COLORS } from './theme';
 
-const getSupportedMimeType = (): string | null => {
-  const types = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
-  for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) return type;
-  }
-  return null;
-};
-
-const spin = keyframes`to { transform: rotate(360deg); }`;
 const pulseGlow = keyframes`
   0%, 100% { box-shadow: 0 0 15px rgba(97, 75, 255, 0.4); }
   50% { box-shadow: 0 0 25px rgba(97, 75, 255, 0.7); }
 `;
-
-// --- NEW QWEN COLOR PALETTE ---
-const COLORS = {
-  bgBase: '#090810',
-  bgPanel: '#131120',
-  bgCard: '#1C1930',
-  primary: '#614BFF',
-  primaryHover: '#7662FF',
-  textMain: '#FFFFFF',
-  textMuted: '#9E97C1',
-  border: '#2A2545',
-  danger: '#FF4455'
-};
 
 const AppContainer = styled.div`
   height: 100svh;
@@ -38,61 +23,6 @@ const AppContainer = styled.div`
   overflow: hidden;
 `;
 
-// --- WELCOME MODAL STYLES ---
-const ModalOverlay = styled.div`
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(9, 8, 16, 0.85); backdrop-filter: blur(12px);
-  display: flex; align-items: center; justify-content: center; z-index: 2000;
-`;
-
-const ModalCard = styled.div`
-  background: ${COLORS.bgPanel};
-  border: 1px solid ${COLORS.border};
-  border-radius: 16px;
-  padding: 40px;
-  max-width: 760px;
-  width: 90%;
-  box-shadow: 0 32px 120px rgba(0,0,0,0.8);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 24px;
-`;
-
-const ModalTitle = styled.h2`
-  font-size: 24px; font-weight: 700; color: ${COLORS.textMain}; margin: 0;
-`;
-
-const ModalText = styled.p`
-  font-size: 15px; color: ${COLORS.textMuted}; margin: 0; text-align: center; line-height: 1.5;
-`;
-
-const ExampleRow = styled.div`
-  display: flex; align-items: center; gap: 16px; width: 100%; justify-content: center;
-  margin: 16px 0;
-`;
-
-const ExampleBox = styled.div`
-  background: ${COLORS.bgCard}; border: 1px solid ${COLORS.border};
-  border-radius: 12px; padding: 12px; display: flex; flex-direction: column;
-  align-items: center; gap: 12px; width: 180px;
-  
-  span { font-size: 12px; font-weight: 600; color: ${COLORS.textMuted}; text-transform: uppercase; }
-  img, video { width: 100%; height: 200px; object-fit: cover; border-radius: 8px; }
-`;
-
-const PlusMath = styled.div`
-  font-size: 24px; color: ${COLORS.textMuted}; font-weight: bold;
-`;
-
-const StartButton = styled.button`
-  padding: 14px 32px; border-radius: 8px; border: none;
-  background: ${COLORS.primary}; color: white; font-size: 15px; font-weight: 600;
-  cursor: pointer; transition: all 0.2s ease; margin-top: 8px;
-  &:hover { background: ${COLORS.primaryHover}; transform: translateY(-2px); }
-`;
-
-// --- SIDEBAR (Left Panel) ---
 const Sidebar = styled.div`
   width: 380px;
   background: ${COLORS.bgPanel};
@@ -160,39 +90,6 @@ const SectionLabel = styled.h2`
   letter-spacing: 0.5px;
 `;
 
-// --- STAGE (Right Panel) ---
-const Stage = styled.div`
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  background: radial-gradient(circle at center, #151226 0%, ${COLORS.bgBase} 100%);
-`;
-
-// --- SHARED UI COMPONENTS ---
-const DropzoneBox = styled.div<{ $isDragging?: boolean; $hasContent?: boolean }>`
-  width: 100%;
-  aspect-ratio: ${props => props.$hasContent ? 'auto' : '16/9'};
-  min-height: 160px;
-  background: ${COLORS.bgCard};
-  border: 2px dashed ${props => props.$isDragging ? COLORS.primary : COLORS.border};
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  overflow: hidden;
-  position: relative;
-
-  &:hover {
-    border-color: ${COLORS.primaryHover};
-    background: #221d3b;
-  }
-`;
-
 const ExecuteButton = styled.button`
   margin: 24px;
   padding: 16px;
@@ -220,46 +117,7 @@ const ExecuteButton = styled.button`
   }
 `;
 
-const RecordButton = styled.button<{ $isRecording: boolean }>`
-  width: 48px; height: 48px; border-radius: 50%;
-  border: 2px solid ${COLORS.danger};
-  background: ${props => props.$isRecording ? COLORS.danger : 'transparent'};
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-  transition: all 0.2s ease; position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 10;
-  &::after {
-    content: ''; width: ${props => props.$isRecording ? '16px' : '24px'};
-    height: ${props => props.$isRecording ? '16px' : '24px'};
-    background: ${props => props.$isRecording ? '#fff' : COLORS.danger};
-    border-radius: ${props => props.$isRecording ? '4px' : '50%'};
-    transition: all 0.2s ease;
-  }
-`;
-
-const ClearButton = styled.button`
-  position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.6);
-  color: white; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px;
-  cursor: pointer; z-index: 10; backdrop-filter: blur(4px);
-  &:hover { background: ${COLORS.danger}; }
-`;
-
-const LoadingOverlay = styled.div`
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(9, 8, 16, 0.85); backdrop-filter: blur(8px);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000;
-`;
-
-const Spinner = styled.div`
-  width: 50px; height: 50px; border: 4px solid ${COLORS.bgCard};
-  border-top-color: ${COLORS.primary}; border-radius: 50%; animation: ${spin} 1s linear infinite; margin-bottom: 20px;
-`;
-
-const PreviewMedia = styled.div`
-  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
-  img, video { max-width: 100%; max-height: 240px; object-fit: contain; border-radius: 8px; }
-`;
-
 const App: React.FC = () => {
-  // Modal state checking localStorage
   const [showModal, setShowModal] = useState(() => {
     return localStorage.getItem('hideWelcomeModal') !== 'true';
   });
@@ -269,40 +127,30 @@ const App: React.FC = () => {
     localStorage.setItem('hideWelcomeModal', 'true');
   };
 
-  const initialVariables = useTemplateVariables();
-  const [referenceImage, setReferenceImage] = useState<string | null>(initialVariables.reference_image || null);
-  const [motionVideo, setMotionVideo] = useState<string | null>(initialVariables.motion_video || null);
-  const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
-
-  const [isUploadingImage, setIsUploadingImage] = useState(false);
-  const [isUploadingVideo, setIsUploadingVideo] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isWebcamActive, setIsWebcamActive] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string>("Initializing...");
-
+  const [referenceImage, setReferenceImage] = useState<string | null>(null);
+  const [motionVideo, setMotionVideo] = useState<string | null>(null);
   const [localImageUrl, setLocalImageUrl] = useState<string | null>(null);
   const [localVideoUrl, setLocalVideoUrl] = useState<string | null>(null);
 
-  const imageInputRef = useRef<HTMLInputElement>(null);
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const webcamRef = useRef<HTMLVideoElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [isUploadingVideo, setIsUploadingVideo] = useState(false);
 
-  useEffect(() => {
-    if (isWebcamActive && webcamRef.current && streamRef.current) {
-      webcamRef.current.srcObject = streamRef.current;
-      webcamRef.current.play().catch(console.error);
-    }
-  }, [isWebcamActive]);
+  const { 
+    isRecording, isWebcamActive, webcamRef, 
+    startWebcam, toggleRecording 
+  } = useMediaCapture(async (file) => {
+    // Handle webcam file capture
+    await handleVideoUpload(file);
+  });
+
+  const { isSubmitting, statusMessage, finalVideoUrl, startJob } = useJobOrchestrator();
 
   const handleImageUpload = async (file: File) => {
     const localUrl = URL.createObjectURL(file);
     setLocalImageUrl(localUrl);
     setIsUploadingImage(true);
     try {
-      const url = await uploadFile(file);
+      const url = await StorageClient.uploadFile(file);
       if (url) setReferenceImage(url);
     } finally {
       setIsUploadingImage(false);
@@ -314,174 +162,24 @@ const App: React.FC = () => {
     setLocalVideoUrl(localUrl);
     setIsUploadingVideo(true);
     try {
-      const url = await uploadFile(file);
+      const url = await StorageClient.uploadFile(file);
       if (url) setMotionVideo(url);
     } finally {
       setIsUploadingVideo(false);
     }
   };
 
-  const startWebcam = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      streamRef.current = stream;
-      setIsWebcamActive(true);
-    } catch (error) { alert('Could not access webcam.'); }
-  };
-
-  const stopWebcam = useCallback(() => {
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-    setIsWebcamActive(false);
-    setIsRecording(false);
-  }, []);
-
-  const toggleRecording = () => {
-    if (isRecording) {
-      mediaRecorderRef.current?.stop();
-    } else {
-      if (!streamRef.current) return;
-      const mediaRecorder = new MediaRecorder(streamRef.current, { mimeType: getSupportedMimeType() || '' });
-      mediaRecorderRef.current = mediaRecorder;
-      const chunks: Blob[] = [];
-      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-      mediaRecorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
-        stopWebcam();
-        await handleVideoUpload(new File([blob], 'motion.webm', { type: blob.type }));
-      };
-      mediaRecorder.start(100);
-      setIsRecording(true);
-      setTimeout(() => mediaRecorder.stop(), 5000); 
-    }
-  };
-
-  // --- THE MAGIC: Dynamic URL Resolution ---
-  const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (referenceImage && motionVideo) {
-      setIsSubmitting(true);
-      setStatusMessage("Starting DAG Execution...");
-      try {
-        // === UPDATED DAG PAYLOAD ===
-        const dagPayload = {
-          graph_id: "motion-control-pipeline-v2",
-          state: { reference_image: referenceImage, motion_video: motionVideo },
-          nodes: [
-            { 
-              id: "node_ffmpeg_1", 
-              type: "ffmpeg_processor", 
-              inputs: { video_url: "{{motion_video}}", action: "trim_and_resize" } 
-            },
-            {
-              id: "node_template_1",
-              type: "alibaba_template_generator",
-              inputs: { video_url: "{{node_ffmpeg_1.output_path}}" }
-            },
-            {
-              id: "node_image_1",
-              type: "alibaba_image_detector",
-              inputs: { image_url: "{{reference_image}}" }
-            },
-            { 
-              id: "node_qwen_1", 
-              type: "qwen_video_generator", 
-              inputs: { 
-                validated_image_url: "{{node_image_1.validated_image_url}}", 
-                template_id: "{{node_template_1.template_id}}",
-                prompt: "apply the motion to the reference image" 
-              } 
-            }
-          ],
-          edges: [
-            { source: "node_ffmpeg_1", target: "node_template_1" },
-            { source: "node_template_1", target: "node_qwen_1" },
-            { source: "node_image_1", target: "node_qwen_1" }
-          ]
-        };
-
-        const initRes = await fetch(`${API_URL}/execute-graph`, {
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify(dagPayload)
-        });
-        
-        if (!initRes.ok) throw new Error('Failed to start');
-        
-        const { job_id } = await initRes.json();
-        
-        const poll = setInterval(async () => {
-          const statRes = await fetch(`${API_URL}/job-status/${job_id}`);
-          const statData = await statRes.json();
-          
-          // This will now dynamically show "Executing alibaba_template_generator..." etc.
-          setStatusMessage(statData.message || "Processing...");
-          
-          if (statData.status === 'completed') {
-            clearInterval(poll);
-            setFinalVideoUrl(statData.final_state["node_qwen_1.video_url"]);
-            setIsSubmitting(false);
-          } else if (statData.status === 'failed') {
-            clearInterval(poll);
-            alert(`Failed: ${statData.error}`);
-            setIsSubmitting(false);
-          }
-        }, 5000);
-      } catch (e) {
-        setIsSubmitting(false);
-        alert("Server error. Is FastAPI running?");
-      }
+      startJob(referenceImage, motionVideo);
     }
   };
-  
+
   const canSubmit = referenceImage && motionVideo && !isSubmitting;
 
   return (
     <AppContainer>
-
-      {/* --- WELCOME MODAL --- */}
-      {showModal && (
-        <ModalOverlay onClick={dismissModal}>
-          <ModalCard onClick={(e) => e.stopPropagation()}>
-            <ModalTitle>Welcome to Animate Studio</ModalTitle>
-            <ModalText>
-              Bring any character to life. Just upload a clear, full-body character image and a motion template video to generate your AI animation.
-            </ModalText>
-            
-            <ExampleRow>
-              <ExampleBox>
-                <span>1. Character</span>
-                <img src="https://bbgljtsebzqqlspagmfs.supabase.co/storage/v1/object/public/motion-studio-media/intro/black-bear.jpg" alt="Example Bear" />
-              </ExampleBox>
-              
-              <PlusMath>+</PlusMath>
-              
-              <ExampleBox>
-                <span>2. Motion</span>
-                <video src="https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/en-US/20250704/xwikan/2.mp4" autoPlay loop muted playsInline />
-              </ExampleBox>
-              
-              <PlusMath>=</PlusMath>
-              
-              <ExampleBox style={{ borderColor: COLORS.primary, boxShadow: `0 0 20px rgba(97, 75, 255, 0.2)` }}>
-                <span style={{ color: COLORS.primary }}>Result</span>
-                <video 
-                  src="https://bbgljtsebzqqlspagmfs.supabase.co/storage/v1/object/public/motion-studio-media/intro/black-bear-dancing.mp4" 
-                  autoPlay 
-                  loop 
-                  muted 
-                  playsInline 
-                  style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '8px', border: `1px solid ${COLORS.primary}` }}
-                />
-              </ExampleBox>
-            </ExampleRow>
-
-            <StartButton onClick={dismissModal}>
-              Got it, let's animate
-            </StartButton>
-          </ModalCard>
-        </ModalOverlay>
-      )}
+      {showModal && <WelcomeModal onDismiss={dismissModal} />}
 
       <Sidebar>
         <Header>
@@ -494,43 +192,33 @@ const App: React.FC = () => {
             <SectionHeader>
               <SectionLabel>1. Character Image</SectionLabel>
             </SectionHeader>
-            <DropzoneBox 
-              $hasContent={!!referenceImage || !!localImageUrl} 
-              onClick={() => !isUploadingImage && imageInputRef.current?.click()}
-            >
-              {(referenceImage || localImageUrl) ? (
-                <>
-                  <ClearButton onClick={(e) => { e.stopPropagation(); setReferenceImage(null); setLocalImageUrl(null); }}>Clear</ClearButton>
-                  <PreviewMedia><img src={localImageUrl || referenceImage || ''} alt="Ref" /></PreviewMedia>
-                  {isUploadingImage && <div style={{position:'absolute', background: 'rgba(0,0,0,0.5)', color:'white', width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center'}}>Uploading...</div>}
-                </>
-              ) : (
-                <span style={{ color: COLORS.textMuted, fontSize: '13px' }}>Click to upload image</span>
-              )}
-            </DropzoneBox>
-            <input type="file" ref={imageInputRef} hidden accept="image/*" onChange={(e) => e.target.files?.[0] && handleImageUpload(e.target.files[0])} />
+            <MediaUploader
+              type="image"
+              previewUrl={localImageUrl || referenceImage}
+              isUploading={isUploadingImage}
+              onUpload={handleImageUpload}
+              onClear={() => { setReferenceImage(null); setLocalImageUrl(null); }}
+            />
           </InputSection>
 
           <InputSection>
             <SectionHeader>
               <SectionLabel>2. Action Template</SectionLabel>
             </SectionHeader>
-            <DropzoneBox 
-              $hasContent={!!motionVideo || !!localVideoUrl || isWebcamActive}
-              onClick={() => { if(!motionVideo && !isWebcamActive) videoInputRef.current?.click() }}
-            >
-              {isWebcamActive ? (
-                <>
-                  <PreviewMedia><video ref={webcamRef} autoPlay muted playsInline style={{transform: 'scaleX(-1)'}} /></PreviewMedia>
-                  <RecordButton $isRecording={isRecording} onClick={(e) => { e.stopPropagation(); toggleRecording(); }} />
-                </>
-              ) : (motionVideo || localVideoUrl) ? (
-                <>
-                  <ClearButton onClick={(e) => { e.stopPropagation(); setMotionVideo(null); setLocalVideoUrl(null); }}>Clear</ClearButton>
-                  <PreviewMedia><video src={localVideoUrl || motionVideo || ''} autoPlay loop muted playsInline /></PreviewMedia>
-                  {isUploadingVideo && <div style={{position:'absolute', background: 'rgba(0,0,0,0.5)', color:'white', width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center'}}>Uploading...</div>}
-                </>
-              ) : (
+            <MediaUploader
+              type="video"
+              previewUrl={localVideoUrl || motionVideo}
+              isUploading={isUploadingVideo}
+              onUpload={handleVideoUpload}
+              onClear={() => { setMotionVideo(null); setLocalVideoUrl(null); }}
+              customContent={isWebcamActive ? (
+                <WebcamRecorder 
+                  webcamRef={webcamRef} 
+                  isRecording={isRecording} 
+                  onToggleRecording={toggleRecording} 
+                />
+              ) : undefined}
+              emptyState={
                 <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap: '8px'}}>
                   <span style={{ color: COLORS.textMuted, fontSize: '13px' }}>Click to upload video</span>
                   <span style={{ color: COLORS.border, fontSize: '11px' }}>— OR —</span>
@@ -538,9 +226,8 @@ const App: React.FC = () => {
                     Use Webcam
                   </button>
                 </div>
-              )}
-            </DropzoneBox>
-            <input type="file" ref={videoInputRef} hidden accept="video/*" onChange={(e) => e.target.files?.[0] && handleVideoUpload(e.target.files[0])} />
+              }
+            />
           </InputSection>
         </ScrollableInputs>
 
@@ -549,34 +236,11 @@ const App: React.FC = () => {
         </ExecuteButton>
       </Sidebar>
 
-      <Stage>
-        {!finalVideoUrl && !isSubmitting && (
-          <div style={{ textAlign: 'center', color: COLORS.textMuted }}>
-            <div style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.2 }}>✨</div>
-            <h2 style={{ fontSize: '20px', fontWeight: 600, color: COLORS.textMain, margin: '0 0 8px 0' }}>Ready to Animate</h2>
-            <p style={{ fontSize: '14px', maxWidth: '300px', margin: 0, lineHeight: 1.5 }}>
-              Upload a character image and an action template in the sidebar to generate your video.
-            </p>
-          </div>
-        )}
-
-        {finalVideoUrl && (
-          <video 
-            src={finalVideoUrl} 
-            controls autoPlay loop 
-            style={{ maxWidth: '80%', maxHeight: '80%', borderRadius: '12px', boxShadow: '0 24px 80px rgba(0,0,0,0.6)', border: `1px solid ${COLORS.border}` }}
-          />
-        )}
-      </Stage>
-
-      {isSubmitting && (
-        <LoadingOverlay>
-          <Spinner />
-          <h2 style={{ fontSize: '18px', margin: '0 0 8px 0' }}>Synthesizing Video</h2>
-          <p style={{ color: COLORS.primary, fontSize: '14px', fontWeight: 600 }}>{statusMessage}</p>
-        </LoadingOverlay>
-      )}
-
+      <Stage 
+        finalVideoUrl={finalVideoUrl} 
+        isSubmitting={isSubmitting} 
+        statusMessage={statusMessage} 
+      />
     </AppContainer>
   );
 };
