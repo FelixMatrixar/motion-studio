@@ -299,14 +299,41 @@ const App: React.FC = () => {
       setIsSubmitting(true);
       setStatusMessage("Starting DAG Execution...");
       try {
+        // === UPDATED DAG PAYLOAD ===
         const dagPayload = {
-          graph_id: "motion-control-pipeline-v1",
+          graph_id: "motion-control-pipeline-v2",
           state: { reference_image: referenceImage, motion_video: motionVideo },
           nodes: [
-            { id: "node_ffmpeg_1", type: "ffmpeg_processor", inputs: { video_url: "{{motion_video}}", action: "trim_and_resize" } },
-            { id: "node_qwen_1", type: "qwen_video_generator", inputs: { reference_image: "{{reference_image}}", motion_video: "{{node_ffmpeg_1.output_path}}" } }
+            { 
+              id: "node_ffmpeg_1", 
+              type: "ffmpeg_processor", 
+              inputs: { video_url: "{{motion_video}}", action: "trim_and_resize" } 
+            },
+            {
+              id: "node_template_1",
+              type: "alibaba_template_generator",
+              inputs: { video_url: "{{node_ffmpeg_1.output_path}}" }
+            },
+            {
+              id: "node_image_1",
+              type: "alibaba_image_detector",
+              inputs: { image_url: "{{reference_image}}" }
+            },
+            { 
+              id: "node_qwen_1", 
+              type: "qwen_video_generator", 
+              inputs: { 
+                validated_image_url: "{{node_image_1.validated_image_url}}", 
+                template_id: "{{node_template_1.template_id}}",
+                prompt: "apply the motion to the reference image" 
+              } 
+            }
           ],
-          edges: [{ source: "node_ffmpeg_1", target: "node_qwen_1" }]
+          edges: [
+            { source: "node_ffmpeg_1", target: "node_template_1" },
+            { source: "node_template_1", target: "node_qwen_1" },
+            { source: "node_image_1", target: "node_qwen_1" }
+          ]
         };
 
         const initRes = await fetch(`${API_URL}/execute-graph`, {
@@ -322,6 +349,8 @@ const App: React.FC = () => {
         const poll = setInterval(async () => {
           const statRes = await fetch(`${API_URL}/job-status/${job_id}`);
           const statData = await statRes.json();
+          
+          // This will now dynamically show "Executing alibaba_template_generator..." etc.
           setStatusMessage(statData.message || "Processing...");
           
           if (statData.status === 'completed') {
@@ -340,7 +369,7 @@ const App: React.FC = () => {
       }
     }
   };
-
+  
   const canSubmit = referenceImage && motionVideo && !isSubmitting;
 
   return (
