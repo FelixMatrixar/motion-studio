@@ -39,6 +39,8 @@ async def execute_node(node_type: str, inputs: dict) -> dict:
     """Router function to trigger the correct logic based on node type."""
     registry = {
         "ffmpeg_processor": run_ffmpeg_processor,
+        "alibaba_template_generator": run_alibaba_template_generator,
+        "alibaba_image_detector": run_alibaba_image_detector,
         "qwen_video_generator": run_qwen_generator
     }
     
@@ -70,9 +72,10 @@ def _process_ffmpeg_sync(input_url: str, action: str) -> str:
             (
                 ffmpeg
                 .input(target_input, t=5) 
-                .filter('scale', 768, 768, force_original_aspect_ratio='increase')
-                .filter('crop', 768, 768)
-                .filter('fps', fps=30)
+                # Scale width to 720, automatically calculate height to preserve aspect ratio. 
+                # The -2 ensures the height is an even number (required by libx264).
+                .filter('scale', 720, -2)
+                .filter('fps', fps=24)
                 .output(output_filename, vcodec='libx264', crf=23, acodec='aac')
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
@@ -107,6 +110,9 @@ async def upload_to_public_storage(local_path: str) -> str:
     public_url = await asyncio.to_thread(_upload_sync)
     print(f"[Storage] Upload complete. Public URL: {public_url}")
     
+    # Give Supabase 2 seconds to propagate the public link
+    await asyncio.sleep(2)
+    
     if os.path.exists(local_path):
         os.remove(local_path)
         
@@ -127,13 +133,143 @@ async def run_ffmpeg_processor(inputs: dict) -> dict:
 
 
 # ==========================================
-# 4. QWEN (DASHSCOPE) GENERATOR NODE (Custom HTTP implementation)
+# 4. ALIBABA IMAGE DETECTOR NODE
 # ==========================================
 
-def _call_qwen_sync(ref_image: str, motion_vid: str, prompt: str) -> dict:
-    """Synchronous polling loop for AnimateAnyone Gen 2."""
+def _call_image_detect_sync(image_url: str) -> dict:
+    """Synchronous API call to validate the character image."""
+    api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/aa-detect"
     
-    # Note: For this specific API, we drop the '-intl' from the URL as per your docs
+    headers = {
+        "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "animate-anyone-detect-gen2",
+        "input": {
+            "image_url": image_url
+        }
+    }
+
+    print(f"[Image Detect] Validating reference image...")
+    response = requests.post(api_url, headers=headers, json=payload)
+    
+    if response.status_code != 200:
+        raise Exception(f"Failed to call Image Detect API: {response.text}")
+        
+    response_data = response.json()
+    check_pass = response_data.get("output", {}).get("check_pass", False)
+    
+    if not check_pass:
+        raise ValueError("Image rejected by Alibaba: Ensure it is a clear, unobstructed full or half-body portrait.")
+
+    print(f"[Image Detect] Image passed validation!")
+    
+    # We return the original image URL so the DAG can pass it to the final node
+    return {"validated_image_url": image_url}
+
+async def run_alibaba_image_detector(inputs: dict) -> dict:
+    image_url = inputs.get("image_url")
+    if not image_url:
+        raise ValueError("Missing 'image_url' for image detector")
+        
+    return await asyncio.to_thread(_call_image_detect_sync, image_url)
+
+
+# ==========================================
+# 5. ALIBABA TEMPLATE GENERATOR NODE
+# ==========================================
+
+def _call_template_gen_sync(video_url: str) -> dict:
+    """Synchronous polling loop for AnimateAnyone Action Template."""
+    
+    # Print the exact URL for debugging
+    print(f"\n[Template Gen] Sending this exact URL to Alibaba: {video_url}\n")
+    
+    # The dedicated endpoint for template generation
+    api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/aa-template-generation/"
+    
+    headers = {
+        "X-DashScope-Async": "enable",
+        "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "animate-anyone-template-gen2",
+        "input": {
+            "video_url": video_url
+        }
+    }
+
+    print(f"[Template Gen] Submitting raw video for template extraction...")
+    response = requests.post(api_url, headers=headers, json=payload)
+    
+    if response.status_code != 200:
+        raise Exception(f"Failed to create Template generation task: {response.text}")
+        
+    response_data = response.json()
+    task_id = response_data.get("output", {}).get("task_id")
+    
+    if not task_id:
+        raise Exception(f"Task ID not found in response: {response_data}")
+        
+    print(f"[Template Gen] Task submitted successfully. Task ID: {task_id}")
+
+    poll_url = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
+    poll_headers = {
+        "Authorization": f"Bearer {DASHSCOPE_API_KEY}"
+    }
+
+    while True:
+        poll_response = requests.get(poll_url, headers=poll_headers)
+        if poll_response.status_code != 200:
+            raise Exception(f"Polling failed: {poll_response.text}")
+            
+        poll_data = poll_response.json()
+        task_status = poll_data.get("output", {}).get("task_status")
+        
+        if task_status == "SUCCEEDED":
+            template_id = poll_data.get("output", {}).get("template_id") 
+            print(f"[Template Gen] Generation complete! Template ID: {template_id}")
+            
+            # Nuke the file from Supabase to save quota
+            try:
+                # Extract 'processed/uuid_processed.mp4' from the full URL
+                bucket_path = video_url.split("/public/motion-studio-media/")[-1]
+                print(f"[Cleanup] Deleting temporary file from Supabase: {bucket_path}")
+                
+                # Use the existing supabase client to delete it
+                supabase.storage.from_("motion-studio-media").remove([bucket_path])
+                print("[Cleanup] File deleted successfully. Quota reclaimed.")
+            except Exception as e:
+                print(f"[Cleanup Warning] Failed to delete temporary file: {e}")
+
+            return {"template_id": template_id}
+            
+        elif task_status in ["FAILED", "CANCELED", "UNKNOWN"]:
+            error_code = poll_data.get("output", {}).get("code", "Unknown code")
+            error_msg = poll_data.get("output", {}).get("message", "Unknown error")
+            raise Exception(f"Template Gen Task Failed: {task_status} | Code: {error_code} | Reason: {error_msg}")
+            
+        print(f"[Template Gen] Status: {task_status}... waiting 5 seconds.")
+        time.sleep(5)
+
+async def run_alibaba_template_generator(inputs: dict) -> dict:
+    video_url = inputs.get("video_url")
+    if not video_url:
+        raise ValueError("Missing 'video_url' for template generator")
+        
+    return await asyncio.to_thread(_call_template_gen_sync, video_url)
+
+
+# ==========================================
+# 6. QWEN (DASHSCOPE) FINAL GENERATOR NODE
+# ==========================================
+
+def _call_qwen_sync(ref_image: str, template_id: str, prompt: str) -> dict:
+    """Synchronous polling loop for final AnimateAnyone Gen 2 generation."""
     api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2video/video-synthesis/"
     
     headers = {
@@ -142,12 +278,11 @@ def _call_qwen_sync(ref_image: str, motion_vid: str, prompt: str) -> dict:
         "Content-Type": "application/json"
     }
 
-    # IMPORTANT: 'motion_vid' MUST be a valid template_id (e.g., "AACT.xxx..."), not an mp4 URL!
     payload = {
         "model": "animate-anyone-gen2",
         "input": {
             "image_url": ref_image,
-            "template_id": motion_vid  
+            "template_id": template_id  # This now receives the AACT.xxx ID!
         },
         "parameters": {
             "use_ref_img_bg": False,
@@ -155,9 +290,7 @@ def _call_qwen_sync(ref_image: str, motion_vid: str, prompt: str) -> dict:
         }
     }
 
-    print(f"[AnimateAnyone] Submitting task to AnimateAnyone Gen 2...")
-    
-    # 1. Create the Task
+    print(f"[AnimateAnyone] Submitting final task to AnimateAnyone Gen 2...")
     response = requests.post(api_url, headers=headers, json=payload)
     
     if response.status_code != 200:
@@ -170,9 +303,7 @@ def _call_qwen_sync(ref_image: str, motion_vid: str, prompt: str) -> dict:
         raise Exception(f"Task ID not found in response: {response_data}")
         
     print(f"[AnimateAnyone] Task submitted successfully. Task ID: {task_id}")
-    print(f"[AnimateAnyone] Polling for completion. This takes a few minutes...")
 
-    # 2. Poll for the Result
     poll_url = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
     poll_headers = {
         "Authorization": f"Bearer {DASHSCOPE_API_KEY}"
@@ -193,6 +324,7 @@ def _call_qwen_sync(ref_image: str, motion_vid: str, prompt: str) -> dict:
                 "video_url": final_url, 
                 "task_id": task_id
             }
+            
         elif task_status in ["FAILED", "CANCELED", "UNKNOWN"]:
             error_code = poll_data.get("output", {}).get("code", "Unknown code")
             error_msg = poll_data.get("output", {}).get("message", "Unknown error")
@@ -202,14 +334,14 @@ def _call_qwen_sync(ref_image: str, motion_vid: str, prompt: str) -> dict:
         time.sleep(10)
         
 async def run_qwen_generator(inputs: dict) -> dict:
-    ref_image = inputs.get("reference_image")
-    motion_vid = inputs.get("motion_video") 
+    # Changed input variable name expectations to reflect the new DAG flow
+    ref_image = inputs.get("validated_image_url") or inputs.get("reference_image")
+    template_id = inputs.get("template_id") 
     prompt = inputs.get("prompt", "apply the motion to the reference image")
     
-    if not ref_image or not motion_vid:
-         raise ValueError("Qwen node requires both 'reference_image' and 'motion_video'")
+    if not ref_image or not template_id:
+         raise ValueError("Qwen node requires both a reference image URL and a 'template_id'. Ensure the image detection and template generation nodes ran successfully.")
 
-    # Run the blocking network polling loop in a thread
-    output_data = await asyncio.to_thread(_call_qwen_sync, ref_image, motion_vid, prompt)
+    output_data = await asyncio.to_thread(_call_qwen_sync, ref_image, template_id, prompt)
     
     return output_data
